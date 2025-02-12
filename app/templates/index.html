@@ -1,0 +1,539 @@
+<!doctype html>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />    
+        <title>Wandb Hackathon</title>
+        <script src="https:///unpkg.com/alpinejs" defer></script>
+        <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+        <script src="https://unpkg.com/showdown/dist/showdown.min.js"></script>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&family=Geist:wght@100..900&display=swap" rel="stylesheet">
+        <style>
+            html, body {
+                font-family: 'Geist', sans-serif;
+                font-size: 14px;
+            }
+            [x-cloak] {
+                display: none !important;
+            }
+        </style>
+    </head>
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('pageLogic', () => ({
+                showTitle: false,
+                showSettings: false,
+                threads: [],
+                activeThreadId: null,
+                searchQuery: '',
+                currentInputLength: 12,
+                newThreadName: '',
+                settings: {
+                    api_endpoint: '',
+                    api_key: '',
+                    api_model: '',
+                    weave_key: '',
+                    weave_project: ''
+                },
+                settingsError: null,
+                settingsSuccess: false,
+                init() {
+                    // Get thread ID from URL if present
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const threadIdFromUrl = urlParams.get('thread');
+                    
+                    // Fetch threads and set active thread
+                    this.fetchThreads().then(() => {
+                        if (threadIdFromUrl && this.threads.some(t => t.id === threadIdFromUrl)) {
+                            // If URL has thread ID and it exists, use it
+                            this.setActiveThread(threadIdFromUrl);
+                        } else if (this.threads.length > 0) {
+                            // Otherwise use first thread if available
+                            this.setActiveThread(this.threads[0].id);
+                        }
+                    });
+                },
+                async fetchThreads() {
+                    try {
+                        const response = await fetch('/api/threads')
+                        const data = await response.json()
+                        this.threads = data.threads
+                    } catch (error) {
+                        console.error('Error fetching threads:', error)
+                    }
+                },
+                async updateThreadName(newName) {
+                    if (!this.activeThreadId) return;
+                    
+                    try {
+                        const response = await fetch(`/api/thread/${this.activeThreadId}`, {
+                            method: 'PUT',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                thread_name: newName
+                            })
+                        });
+                        
+                        if (response.ok) {
+                            // Update the thread name in the local threads array
+                            const threadIndex = this.threads.findIndex(t => t.id === this.activeThreadId);
+                            if (threadIndex !== -1) {
+                                this.threads[threadIndex].thread_name = newName;
+                            }
+                        } else {
+                            console.error('Failed to update thread name');
+                        }
+                    } catch (error) {
+                        console.error('Error updating thread name:', error);
+                    }
+                },
+                async createThread() {
+                    try {
+                        const response = await fetch('/api/thread/create', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                thread_name: 'Untitled Thread'
+                            })
+                        });
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            // Add the new thread to the local threads array
+                            this.threads.unshift(data.thread);
+                            // Set it as the active thread
+                            this.setActiveThread(data.thread.id);
+                        } else {
+                            console.error('Failed to create thread:', data.error);
+                        }
+                    } catch (error) {
+                        console.error('Error creating thread:', error);
+                    }
+                },
+                // Utilities
+                get filteredThreads() {
+                    return this.threads.filter(thread => 
+                        thread.thread_name.toLowerCase().includes(this.searchQuery.toLowerCase())
+                    )
+                },
+                setActiveThread(threadId) {
+                    this.activeThreadId = threadId;
+                    // Update URL with thread ID
+                    const url = new URL(window.location);
+                    url.searchParams.set('thread', threadId);
+                    window.history.pushState({}, '', url);
+                    
+                    // Get the thread name and update input length
+                    const thread = this.threads.find(t => t.id === threadId);
+                    const threadName = thread?.thread_name || 'Untitled task';
+                },
+                async deleteThread() {
+                    if (!this.activeThreadId) return;
+                    if (confirm('Are you sure you want to delete this thread?')) {
+                        try {
+                            const response = await fetch(`/api/thread/${this.activeThreadId}`, {
+                                method: 'DELETE'
+                            });
+                            if (response.ok) {
+                                const threadIndex = this.threads.findIndex(t => t.id === this.activeThreadId);
+                                this.threads = this.threads.filter(t => t.id !== this.activeThreadId);
+                                if (this.threads.length > 0) {
+                                    // Set next thread as active, or previous if we deleted the last thread
+                                    const nextThread = this.threads[threadIndex] || this.threads[threadIndex - 1];
+                                    this.setActiveThread(nextThread.id);
+                                } else {
+                                    this.activeThreadId = null;
+                                }
+                                this.showTitle = false;
+                            }
+                        } catch (error) {
+                            console.error('Error deleting thread:', error);
+                        }
+                    }
+                },
+                async updateSettings() {
+                    try {
+                        const response = await fetch('/api/settings', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(this.settings)
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            this.settingsSuccess = true;
+                            this.settingsError = null;
+                            setTimeout(() => {
+                                this.showSettings = false;
+                                this.settingsSuccess = false;
+                            }, 1500);
+                        } else {
+                            this.settingsError = data.error || 'Failed to update settings';
+                        }
+                    } catch (error) {
+                        this.settingsError = 'Failed to update settings';
+                        console.error('Error updating settings:', error);
+                    }
+                },
+                async fetchSettings() {
+                    try {
+                        const response = await fetch('/api/settings');
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            // Update settings with fetched data
+                            this.settings = {
+                                api_endpoint: data.api_endpoint || '',
+                                api_key: data.api_key || '',
+                                api_model: data.api_model || '',
+                                weave_key: data.weave_key || '',
+                                weave_project: data.weave_project || ''
+                            };
+                            this.settingsError = null;
+                        } else {
+                            this.settingsError = data.error || 'Failed to load settings';
+                        }
+                    } catch (error) {
+                        console.error('Error fetching settings:', error);
+                        this.settingsError = 'Failed to load settings';
+                    }
+                },
+            }))
+        })
+    </script>
+    <body x-cloak x-data="pageLogic" class="text-stone-800" :class="{ 'bg-stone-600': showSettings || showTitle, 'bg-white': !showSettings && !showTitle }">
+        <!-- Body scope -->
+        <div id="body-container" 
+             :class="{ 'scale-95 rounded-lg': showSettings || showTitle }"
+             class="h-screen flex flex-col bg-white overflow-hidden transition-transform duration-200">
+            <!-- Header -->
+            <header class="flex items-center bg-white p-2">
+                <div class="flex w-9 h-9 rounded-md shadow-md bg-stone-800 items-center justify-between overflow-hidden hover:shadow-lg">
+                    <img src="/static/logomark.png" class="w-full h-full" />
+                </div>
+                <div class="ml-[calc(16.666%-30px)] max-w-full ellipses flex-1">
+                    <p @click="showTitle = true; $nextTick(() => $refs.titleInput.focus())"
+                        class="text-lg font-semibold px-4 py-1 rounded-md border-0 outline-0 w-max cursor-default hover:bg-stone-100"
+                        x-text="activeThreadId ? (threads.find(t => t.id === activeThreadId)?.thread_name || 'Untitled task') : 'Untitled task'"
+                    ></p>
+                </div>
+                <div class="flex items-center px-2 gap-2">
+                    <button id="ai-settings" 
+                            @click="showSettings = true; fetchSettings()"
+                            class="flex items-center justify-center w-8 h-8 rounded-md hover:bg-stone-100">
+                        <svg class="w-[16px] h-[16px]" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M64 144h226.75a48 48 0 0 0 90.5 0H448a16 16 0 0 0 0-32h-66.75a48 48 0 0 0-90.5 0H64a16 16 0 0 0 0 32zm384 224h-66.75a48 48 0 0 0-90.5 0H64a16 16 0 0 0 0 32h226.75a48 48 0 0 0 90.5 0H448a16 16 0 0 0 0-32zm0-128H221.25a48 48 0 0 0-90.5 0H64a16 16 0 0 0 0 32h66.75a48 48 0 0 0 90.5 0H448a16 16 0 0 0 0-32z"></path></svg>
+                    </button>
+                    <button class="flex items-center justify-center w-8 h-8 rounded-full bg-stone-800 overflow-hidden">
+                        <img src="/static/profile.jpg" class="w-full h-full" />
+                    </button>
+                </div>
+            </header>
+
+            <!-- Main content area -->
+            <div class="flex flex-1 overflow-hidden">
+                <aside class="w-2/12 pl-2 mr-2 py-[13px] bg-white overflow-y-auto">
+                    <div class="space-y-1">
+                        <div class="flex items-center gap-2">
+                            <div class="relative w-full px-2">
+                                <svg class="absolute top-[7px] text-stone-500" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M456.69 421.39 362.6 327.3a173.81 173.81 0 0 0 34.84-104.58C397.44 126.38 319.06 48 222.72 48S48 126.38 48 222.72s78.38 174.72 174.72 174.72A173.81 173.81 0 0 0 327.3 362.6l94.09 94.09a25 25 0 0 0 35.3-35.3zM97.92 222.72a124.8 124.8 0 1 1 124.8 124.8 124.95 124.95 0 0 1-124.8-124.8z"></path></svg>
+                                <input 
+                                    type="text" 
+                                    class="w-full px-3 pl-6 py-1 bg-white border-0 outline-0" 
+                                    placeholder="Search..." 
+                                    x-model="searchQuery"
+                                />
+                            </div>
+                            <button 
+                                @click="createThread()"
+                                class="flex items-center justify-center min-w-[21px] min-h-[21px] rounded-md hover:bg-stone-200"
+                            >
+                                <svg class="w-[16px] h-[16px]" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="32" d="M256 112v288m144-144H112"></path></svg>
+                            </button>
+                        </div>
+                        
+                        <template x-for="thread in filteredThreads" :key="thread.id">
+                            <div 
+                                class="group flex items-center px-2.5 py-1 rounded-md cursor-default"
+                                :class="{ 'bg-stone-100': activeThreadId === thread.id }"
+                                @click="setActiveThread(thread.id)"
+                            >
+                                <span x-text="thread.thread_name"></span>
+                                <svg class="ml-auto opacity-0 group-hover:opacity-30" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="48" d="m268 112 144 144-144 144m124-144H100"></path></svg>
+                            </div>
+                        </template>
+
+                        <div x-show="filteredThreads.length === 0" class="px-2.5 py-1 text-stone-400 text-sm">
+                            No threads found...
+                        </div>
+                    </div>
+                </aside>
+
+
+                <!-- Right Sidebar -->
+                <aside class="w-7/12 bg-gray-100 rounded-tl-lg shadow-sm p-4 bg-white border-t border-l border-stone-200 overflow-y-auto relative">
+
+                    <div class="space-y-8 mt-12">
+
+                        <div class="group flex max-w-4xl mx-auto mb-8">
+                            <div class="flex items-center justfy-center mr-6 mt-1 h-10 w-10 min-h-10 min-w-10 rounded-md bg-stone-100 overflow-hidden">
+                                <svg class="text-stone-400 w-6 mx-auto" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M332.64 64.58C313.18 43.57 286 32 256 32c-30.16 0-57.43 11.5-76.8 32.38-19.58 21.11-29.12 49.8-26.88 80.78C156.76 206.28 203.27 256 256 256s99.16-49.71 103.67-110.82c2.27-30.7-7.33-59.33-27.03-80.6zM432 480H80a31 31 0 0 1-24.2-11.13c-6.5-7.77-9.12-18.38-7.18-29.11C57.06 392.94 83.4 353.61 124.8 326c36.78-24.51 83.37-38 131.2-38s94.42 13.5 131.2 38c41.4 27.6 67.74 66.93 76.18 113.75 1.94 10.73-.68 21.34-7.18 29.11A31 31 0 0 1 432 480z"></path></svg>
+                            </div>
+                            <div class="w-full">
+                                <div class="prose mb-2">
+                                    Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum.
+                                </div>
+                                <div class="flex items-center opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                                    <div class="text-stone-400 text-sm">User</div>
+                                    <button class="flex items-center ml-auto text-stone-400 font-medium text-sm hover:text-stone-800 group-hover:opacity-100">
+                                        <svg class="mr-1" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" d="M296 64h-80a7.91 7.91 0 0 0-8 8v24h96V72a7.91 7.91 0 0 0-8-8z"></path><path fill="none" d="M292 64h-72a4 4 0 0 0-4 4v28h80V68a4 4 0 0 0-4-4z"></path><path d="M447.55 96H336V48a16 16 0 0 0-16-16H192a16 16 0 0 0-16 16v48H64.45L64 136h33l20.09 314A32 32 0 0 0 149 480h214a32 32 0 0 0 31.93-29.95L415 136h33zM176 416l-9-256h33l9 256zm96 0h-32V160h32zm24-320h-80V68a4 4 0 0 1 4-4h72a4 4 0 0 1 4 4zm40 320h-33l9-256h33z"></path></svg>
+                                        Delete
+                                    </button>
+                                    <button class="flex items-center ml-2 text-stone-400 font-medium text-sm hover:text-stone-800 group-hover:opacity-100">
+                                        <svg class="mr-0.5" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="44" d="M358.62 129.28 86.49 402.08 70 442l39.92-16.49 272.8-272.13-24.1-24.1zm54.45-54.44-11.79 11.78 24.1 24.1 11.79-11.79a16.51 16.51 0 0 0 0-23.34l-.75-.75a16.51 16.51 0 0 0-23.35 0z"></path></svg>
+                                        Edit
+                                    </button>
+                                </div>    
+                            </div>
+                        </div>
+                        
+                        <div class="group flex max-w-4xl mx-auto">
+                            <div class="flex items-start justfy-center mr-6 mt-1 h-10 w-10 min-h-10 min-w-10 rounded-md shadow-sm overflow-hidden">
+                                <img src="/static/logomark.png" class="w-full h-full" />
+                            </div>
+                            <div class="w-full">
+                                <div class="prose mb-2">
+                                    Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum.
+                                </div>
+                                <div class="flex items-center opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                                    <div class="text-stone-400 text-sm">Assistant</div>
+                                    <button class="flex items-center ml-auto text-stone-400 font-medium text-sm hover:text-stone-800 group-hover:opacity-100">
+                                        <svg class="mr-1" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" d="M296 64h-80a7.91 7.91 0 0 0-8 8v24h96V72a7.91 7.91 0 0 0-8-8z"></path><path fill="none" d="M292 64h-72a4 4 0 0 0-4 4v28h80V68a4 4 0 0 0-4-4z"></path><path d="M447.55 96H336V48a16 16 0 0 0-16-16H192a16 16 0 0 0-16 16v48H64.45L64 136h33l20.09 314A32 32 0 0 0 149 480h214a32 32 0 0 0 31.93-29.95L415 136h33zM176 416l-9-256h33l9 256zm96 0h-32V160h32zm24-320h-80V68a4 4 0 0 1 4-4h72a4 4 0 0 1 4 4zm40 320h-33l9-256h33z"></path></svg>
+                                        Delete
+                                    </button>
+                                    <button class="flex items-center ml-2 text-stone-400 font-medium text-sm hover:text-stone-800 group-hover:opacity-100">
+                                        <svg class="mr-0.5" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="44" d="M358.62 129.28 86.49 402.08 70 442l39.92-16.49 272.8-272.13-24.1-24.1zm54.45-54.44-11.79 11.78 24.1 24.1 11.79-11.79a16.51 16.51 0 0 0 0-23.34l-.75-.75a16.51 16.51 0 0 0-23.35 0z"></path></svg>
+                                        Edit
+                                    </button>
+                                </div>    
+                            </div>
+                        </div>   
+
+                        <div class="group flex max-w-4xl mx-auto">
+                            <div class="flex items-start justfy-center mr-6 mt-1 h-10 w-10 min-h-10 min-w-10 rounded-md shadow-sm overflow-hidden">
+                                <img src="/static/logomark.png" class="w-full h-full" />
+                            </div>
+                            <div class="w-full">
+                                <div class="prose mb-2">
+                                    This is the streaming response...
+                                </div>
+                                <div class="flex items-center opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                                    <div class="text-stone-400 text-sm">Assistant</div>
+                                    <button class="flex items-center ml-auto text-stone-400 font-medium text-sm hover:text-stone-800 group-hover:opacity-100">
+                                        <svg class="mr-1" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" d="M296 64h-80a7.91 7.91 0 0 0-8 8v24h96V72a7.91 7.91 0 0 0-8-8z"></path><path fill="none" d="M292 64h-72a4 4 0 0 0-4 4v28h80V68a4 4 0 0 0-4-4z"></path><path d="M447.55 96H336V48a16 16 0 0 0-16-16H192a16 16 0 0 0-16 16v48H64.45L64 136h33l20.09 314A32 32 0 0 0 149 480h214a32 32 0 0 0 31.93-29.95L415 136h33zM176 416l-9-256h33l9 256zm96 0h-32V160h32zm24-320h-80V68a4 4 0 0 1 4-4h72a4 4 0 0 1 4 4zm40 320h-33l9-256h33z"></path></svg>
+                                        Delete
+                                    </button>
+                                    <button class="flex items-center ml-2 text-stone-400 font-medium text-sm hover:text-stone-800 group-hover:opacity-100">
+                                        <svg class="mr-0.5" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="44" d="M358.62 129.28 86.49 402.08 70 442l39.92-16.49 272.8-272.13-24.1-24.1zm54.45-54.44-11.79 11.78 24.1 24.1 11.79-11.79a16.51 16.51 0 0 0 0-23.34l-.75-.75a16.51 16.51 0 0 0-23.35 0z"></path></svg>
+                                        Edit
+                                    </button>
+                                </div>    
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Fixed input container -->
+                    <div class="fixed -bottom-[4px] ml-2 left-2/12 w-[calc((7/12*100%)-6px)] bg-white">
+                        <div class="relative">
+                            <textarea 
+                                class="w-full p-4 pr-[72px] border-t border-stone-200 bg-white outline-0 shadow-xs text-lg min-h-[120px] max-h-[50vh] hover:border-stone-300 focus:bg-stone-50 resize-none overflow-y-auto"
+                                placeholder="What would you like some help with..."
+                                rows="1"
+                                x-data="{ resize() { this.$el.style.height = '0px'; this.$el.style.height = this.$el.scrollHeight + 'px' } }"
+                                x-init="resize()"
+                                @input="resize()"
+                            ></textarea>
+                            <!-- Send btn -->
+                            <button class="absolute flex items-center justify-center h-10 w-10 rounded-md bg-stone-900 text-white right-[12px] bottom-[16px] shadow-md hover:shadow-lg hover:bg-stone-800">
+                                <svg class="w-4 h-4" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M133 440a35.37 35.37 0 0 1-17.5-4.67c-12-6.8-19.46-20-19.46-34.33V111c0-14.37 7.46-27.53 19.46-34.33a35.13 35.13 0 0 1 35.77.45l247.85 148.36a36 36 0 0 1 0 61l-247.89 148.4A35.5 35.5 0 0 1 133 440z"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                </aside>
+
+                <!-- Main Content -->
+                <main class="w-3/12 p-4 bg-stone-50 border-t border-l border-stone-200 overflow-y-auto">
+                    <div class="w-full h-full flex items-center justify-center">
+                        <div class="space-y-1 pb-16">
+                            <div class="text-center">
+                                <svg class="mx-auto w-6 h-6 text-stone-400 mb-1.5" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path d="M400 0H176a64.11 64.11 0 0 0-62 48h228a74 74 0 0 1 74 74v304.89l22 17.6a16 16 0 0 0 19.34.5 16.41 16.41 0 0 0 6.66-13.42V64a64 64 0 0 0-64-64z"></path><path d="M320 80H112a64 64 0 0 0-64 64v351.62A16.36 16.36 0 0 0 54.6 509a16 16 0 0 0 19.71-.71L216 388.92l141.69 119.32a16 16 0 0 0 19.6.79 16.4 16.4 0 0 0 6.71-13.44V144a64 64 0 0 0-64-64z"></path></svg>
+                                <h2 class="font-semibold text-stone-400">Bookmarks</h2>
+                                <div class="text-stone-400">
+                                    We'll save bookmarks of interest over here as you chat.
+                                </div>
+                            </div>
+                        </div>                        
+                    </div>
+                </main>
+
+            </div>
+        </div>
+
+        <!-- Settings and Title Modals -->
+        <div x-show="showSettings || showTitle" 
+             class="relative z-10 fixed inset-0"
+             x-transition:enter="duration-300 ease-out"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             x-transition:leave="duration-200 ease-in"
+             x-transition:leave-start="opacity-100"
+             x-transition:leave-end="opacity-0">
+            <!-- Overlay -->
+            <div class="fixed inset-0 bg-black/60" @click="showSettings = false; showTitle = false"></div>
+            
+            <!-- Settings Modal -->
+            <div x-show="showSettings" class="fixed inset-0 z-10 w-screen overflow-y-auto">
+                <div class="flex min-h-full items-center justify-center p-4">
+                    <div class="relative w-full max-w-md rounded-xl bg-white p-4 shadow-lg"
+                         x-transition:enter="duration-300 ease-out"
+                         x-transition:enter-start="opacity-0 scale-95"
+                         x-transition:enter-end="opacity-100 scale-100"
+                         x-transition:leave="duration-200 ease-in"
+                         x-transition:leave-start="opacity-100 scale-100"
+                         x-transition:leave-end="opacity-0 scale-95"
+                         @click.outside="showSettings = false">
+
+                        <!-- Settings Form -->
+                        <div class="space-y-2">
+                            <!-- Required Fields -->
+                            <div>
+                                <label class="text-sm mb-0.5 text-stone-600">OpenAI Base URL</label>
+                                <input 
+                                    type="text" 
+                                    x-model="settings.api_endpoint"
+                                    class="w-full px-2 py-1.5 border border-stone-200 rounded-md outline-none hover:border-stone-400 focus:ring focus:ring-2 focus:ring-blue-200 focus:border-blue-600"
+                                    placeholder="https://api.openai.com/v1"
+                                />
+                            </div>
+                            
+                            <div>
+                                <label class="text-sm mb-0.5 text-stone-600">API Key</label>
+                                <input 
+                                    type="password" 
+                                    x-model="settings.api_key"
+                                    class="w-full px-2 py-1.5 border border-stone-200 rounded-md outline-none hover:border-stone-400 focus:ring focus:ring-2 focus:ring-blue-200 focus:border-blue-600"
+                                    placeholder="sk-..."
+                                />
+                            </div>
+
+                            <!-- Optional Fields -->
+                            <div>
+                                <label class="text-sm mb-0.5 text-stone-600">Model Name</label>
+                                <input 
+                                    type="text" 
+                                    x-model="settings.api_model"
+                                    class="w-full px-2 py-1.5 border border-stone-200 rounded-md outline-none hover:border-stone-400 focus:ring focus:ring-2 focus:ring-blue-200 focus:border-blue-600"
+                                    placeholder="gpt-4o"
+                                />
+                            </div>
+
+                            <div>
+                                <label class="text-sm mb-0.5 text-stone-600">Weave API Key</label>
+                                <input 
+                                    type="password" 
+                                    x-model="settings.weave_key"
+                                    class="w-full px-2 py-1.5 border border-stone-200 rounded-md outline-none hover:border-stone-400 focus:ring focus:ring-2 focus:ring-blue-200 focus:border-blue-600"
+                                    placeholder="474cb7..."
+                                />
+                            </div>
+
+                            <div>
+                                <label class="text-sm mb-0.5 text-stone-600">Weave Project ID</label>
+                                <input 
+                                    type="text" 
+                                    x-model="settings.weave_project"
+                                    class="w-full px-2 py-1.5 border border-stone-200 rounded-md outline-none hover:border-stone-400 focus:ring focus:ring-2 focus:ring-blue-200 focus:border-blue-600"
+                                    placeholder="team_name/project_name"
+                                />
+                            </div>
+
+                            <!-- Action Buttons -->
+                            <div class="flex items-center justify-end mt-4">
+                                <button 
+                                    @click="showSettings = false" 
+                                    class="ml-auto flex items-center w-max px-2 py-1.5 w-8 h-8 rounded-md text-stone-600 hover:bg-stone-100"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    @click="updateSettings()"
+                                    class="font-medium ml-2 flex items-center w-max px-2 py-1.5 shadow-sm w-8 h-8 rounded-md bg-stone-800 text-white hover:shadow-md"
+                                >
+                                    Save Settings
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div x-show="showTitle" class="fixed inset-0 z-10 w-screen overflow-y-auto">
+                <div class="flex min-h-full items-center justify-center">
+                    <div class="relative w-full max-w-lg rounded-xl bg-white p-4 shadow-lg"
+                         x-transition:enter="duration-300 ease-out"
+                         x-transition:enter-start="opacity-0 scale-95"
+                         x-transition:enter-end="opacity-100 scale-100"
+                         x-transition:leave="duration-200 ease-in"
+                         x-transition:leave-start="opacity-100 scale-100"
+                         x-transition:leave-end="opacity-0 scale-95"
+                         @click.outside="showTitle = false">
+                        <div class="space-y-4">
+                            <div>
+                                <p class="text-sm mb-0.5 text-stone-600">Thread title</p>
+                                <input 
+                                    type="text" 
+                                    x-ref="titleInput"
+                                    class="w-full px-2 py-1.5 border border-stone-200 rounded-md outline-none hover:border-stone-400 focus:ring focus:ring-2 focus:ring-blue-200 focus:border-blue-600"
+                                    :value="activeThreadId ? (threads.find(t => t.id === activeThreadId)?.thread_name || 'Untitled task') : 'Untitled task'"
+                                    x-model="newThreadName"
+                                    x-init="newThreadName = activeThreadId ? (threads.find(t => t.id === activeThreadId)?.thread_name || 'Untitled task') : 'Untitled task'"
+                                />
+                            </div>
+                            <div class="flex items-center mt-4">
+                                <button 
+                                    @click="deleteThread()"
+                                    class="flex items-center justify-center w-max px-2 py-1.5 min-w-8 min-h-8 rounded-md hover:bg-stone-100"
+                                >
+                                    <svg class="text-rose-700" stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 512 512" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg"><path fill="none" d="M296 64h-80a7.91 7.91 0 0 0-8 8v24h96V72a7.91 7.91 0 0 0-8-8z"></path><path fill="none" d="M292 64h-72a4 4 0 0 0-4 4v28h80V68a4 4 0 0 0-4-4z"></path><path d="M447.55 96H336V48a16 16 0 0 0-16-16H192a16 16 0 0 0-16 16v48H64.45L64 136h33l20.09 314A32 32 0 0 0 149 480h214a32 32 0 0 0 31.93-29.95L415 136h33zM176 416l-9-256h33l9 256zm96 0h-32V160h32zm24-320h-80V68a4 4 0 0 1 4-4h72a4 4 0 0 1 4 4zm40 320h-33l9-256h33z"></path></svg>
+                                    <p class="text-rose-700 ml-1">Delete thread</p>
+                                </button>                            
+                                <button 
+                                    @click="showTitle = false" 
+                                    class="ml-auto flex items-center w-max px-2 py-1.5 w-8 h-8 rounded-md text-stone-600 hover:bg-stone-100"
+                                >
+                                    Cancel
+                                </button>                            
+                                <button 
+                                    @click="updateThreadName(newThreadName); showTitle = false"
+                                    class="font-medium ml-2 flex items-center w-max px-2 py-1.5 shadow-sm w-8 h-8 rounded-md bg-stone-800 text-white hover:shadow-md"
+                                >
+                                    Update thread
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+        </div>
+
+    </body>
+</html>

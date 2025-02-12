@@ -1,0 +1,9 @@
+services:
+  wandb_hackathon:
+    build: .
+    container_name: wandb_hackathon
+    command: /bin/sh -c "nanodjango run app.py"
+    ports:
+      - 127.0.0.1:8001:8000
+    volumes:
+      - ./app:/app

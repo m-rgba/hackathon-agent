@@ -1,0 +1,10 @@
+{
+  "overrides": [
+    {
+      "files": ["*.html", "*.js", "*.jsx", "*.tsx"],
+      "options": {
+        "printWidth": 100000
+      }
+    }
+  ]
+}
