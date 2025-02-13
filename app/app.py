@@ -1,17 +1,14 @@
-from asgiref.sync import sync_to_async
+from agent import  generate_streaming_response
 from django.db import models
+from django.http import StreamingHttpResponse
 from django.shortcuts import render
 from ksuid import Ksuid
 from nanodjango import Django
 from openai import OpenAI
-import asyncio
 import json
-from typing import AsyncGenerator
-from django.http import StreamingHttpResponse
-import time
 import os
-from django.core.serializers.json import DjangoJSONEncoder
-from agent import OpenAIAgent
+import weave
+
 
 app = Django(
     # ALLOWED_HOSTS=["localhost", "127.0.0.1"],
@@ -62,6 +59,11 @@ class Message(models.Model):
 
 
 ### API
+weave_key = Settings.objects.get(key="weave_key").value
+weave_project = Settings.objects.get(key="weave_project").value
+if weave_key and weave_project:
+    os.environ["WANDB_API_KEY"] = weave_key
+    weave.init(weave_project)
 
 
 @app.api.post("/settings")
@@ -95,6 +97,12 @@ def update_openai_settings(request):
                 Settings.objects.update_or_create(
                     key=setting_key, defaults={"value": data[field_name]}
                 )
+        if weave_key and weave_project:
+            weave_key = Settings.objects.get(key="weave_key").value
+            weave_project = Settings.objects.get(key="weave_project").value
+            if weave_key and weave_project:
+                os.environ["WANDB_API_KEY"] = weave_key
+                weave.init(weave_project)
 
         return {"message": "Settings updated successfully"}
     except json.JSONDecodeError:
@@ -340,6 +348,7 @@ def send_message(request):
         except Thread.DoesNotExist:
             return {"error": "Thread not found"}
 
+        @weave.op()
         def generate_response():
             # Create user message
             user_message = Message.objects.create(
@@ -350,9 +359,6 @@ def send_message(request):
                 metadata=data.get("metadata", {}),
             )
 
-            # Initialize OpenAI agent
-            agent = OpenAIAgent(api_endpoint, api_key, api_model)
-
             # Create assistant message placeholder
             assistant_message = Message.objects.create(
                 thread=thread,
@@ -362,10 +368,26 @@ def send_message(request):
                 metadata={},
             )
 
+            # Get thread messages for context
+            thread_messages = [
+                {
+                    "sender": msg.sender,
+                    "message": msg.message,
+                    "type": msg.type
+                }
+                for msg in thread.messages.all().order_by('created_on')
+            ]
+
             accumulated_message = ""
             try:
                 # Generate streaming response
-                for content in agent.generate_streaming_response(data["message"]):
+                for content in generate_streaming_response(
+                    api_endpoint=api_endpoint,
+                    api_key=api_key,
+                    api_model=api_model,
+                    message=data["message"],
+                    thread_messages=thread_messages
+                ):
                     accumulated_message += content
                     yield content
 
