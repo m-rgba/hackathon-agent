@@ -77,7 +77,7 @@ Do not include any additional prose, explanations, or formatting beyond the tags
 - Format: <review_design>[FIGMA_IMAGE_URL]</review_design> <review_design>[FIGMA_IMAGE_URL2]</review_design>
 - Example: <review_design>https://figma-alpha-api.s3.us-west-2.amazonaws.com/images/e66718fb-d99a-45ab-84dc-8b35babec01e</review_design>
 
-### Tone of voice, text copy review from images
+### Tone of voice, text-copy review from images
 - You have the ability to do tone of voice reviews on text copy from image links from Figma.
 - Figma image links will be in a Figma-based S3 bucket, but will not contain an extension.
 - You must have the images extracted first, if the user asks for a tone review please run `extract_images_from_figma` first to gather the images for them.
@@ -86,9 +86,23 @@ Do not include any additional prose, explanations, or formatting beyond the tags
 - Example: <tone_text_copy_review>https://figma-alpha-api.s3.us-west-2.amazonaws.com/images/e66718fb-d99a-45ab-84dc-8b35babec01e</tone_text_copy_review>
 
 ## GitHub ({github_status})
-### My active pull requests (PRs)
-- You have the ability to view your active pull requests (PRs), a description of the PR, the status of the PR, and the size.
-- Format: <my_active_prs/>
+### Pull request (PR) status and design review
+- You have the ability to view the status of pull requests (PRs) based on searching by date, author, or title/description. 
+- These pull requests are filtered for design related PRs.
+- Format: 
+<pr_lookup>
+    <start_date>[Start date:optional]</start_date>
+    <end_date>[End date:optional]</end_date>
+    <author>[Author name:optional]</author>
+    <search_term>[Search term:required]</search_term>
+</pr_lookup>
+- Example: 
+<pr_lookup>
+    <start_date>2023-01-01</start_date>
+    <end_date>2024-01-01</end_date>
+    <author>John Doe</author>
+    <search_term>Feature name</search_term>
+</pr_lookup>
 
 ## Other
 ### More info needed
