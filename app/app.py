@@ -1,10 +1,11 @@
-from agent import  generate_streaming_response
+from agent import  gen_streaming_response, gen_thread_title
 from django.db import models
 from django.http import StreamingHttpResponse
 from django.shortcuts import render
 from ksuid import Ksuid
 from nanodjango import Django
 from openai import OpenAI
+from logger import logger
 import json
 import os
 import weave
@@ -59,11 +60,6 @@ class Message(models.Model):
 
 
 ### API
-weave_key = Settings.objects.get(key="weave_key").value
-weave_project = Settings.objects.get(key="weave_project").value
-if weave_key and weave_project:
-    os.environ["WANDB_API_KEY"] = weave_key
-    weave.init(weave_project)
 
 
 @app.api.post("/settings")
@@ -89,7 +85,9 @@ def update_openai_settings(request):
         optional_fields = {
             "api_model": "api_model",
             "weave_key": "weave_key",
-            "weave_project": "weave_project"
+            "weave_project": "weave_project",
+            "github_token": "github_token",
+            "figma_token": "figma_token"
         }
 
         for field_name, setting_key in optional_fields.items():
@@ -114,7 +112,7 @@ def update_openai_settings(request):
 def get_settings(request):
     try:
         # Define settings to retrieve
-        setting_keys = ["api_endpoint", "api_key", "api_model", "weave_key", "weave_project"]
+        setting_keys = ["api_endpoint", "api_key", "api_model", "weave_key", "weave_project", "github_token", "figma_token"]
         settings_data = {}
 
         # Retrieve each setting
@@ -122,7 +120,7 @@ def get_settings(request):
             try:
                 setting = Settings.objects.get(key=key)
                 # Obscure sensitive information
-                if key in ["api_key", "weave_key"]:
+                if key in ["api_key", "weave_key", "github_token", "figma_token"]:
                     settings_data[key] = "obfuscated"
                 else:
                     settings_data[key] = setting.value
@@ -328,10 +326,12 @@ def create_message(request):
 def send_message(request):
     try:
         data = json.loads(request.body)
+        logger.info("Processing new message request")
 
         # Validate required fields
         required_fields = ["thread_id", "sender", "type", "message"]
         if not all(field in data for field in required_fields):
+            logger.error("Missing required fields in request")
             return {"error": "Missing required fields: 'thread_id', 'sender', 'type', or 'message'."}
 
         # Get OpenAI settings
@@ -339,75 +339,118 @@ def send_message(request):
             api_endpoint = Settings.objects.get(key="api_endpoint").value
             api_key = Settings.objects.get(key="api_key").value
             api_model = Settings.objects.get(key="api_model").value
+            logger.debug("Retrieved OpenAI settings")
         except Settings.DoesNotExist:
+            logger.error("OpenAI settings not configured")
             return {"error": "OpenAI settings not configured"}
+
+        # Get optional tokens
+        try:
+            figma_token = Settings.objects.get(key="figma_token").value
+            logger.debug("Retrieved Figma token")
+        except Settings.DoesNotExist:
+            logger.debug("No Figma token configured")
+            figma_token = None
+
+        try:
+            github_token = Settings.objects.get(key="github_token").value
+            logger.debug("Retrieved GitHub token")
+        except Settings.DoesNotExist:
+            logger.debug("No GitHub token configured")
+            github_token = None
 
         # Get thread
         try:
             thread = Thread.objects.get(id=data["thread_id"])
+            logger.debug(f"Retrieved thread: {thread.id}")
         except Thread.DoesNotExist:
+            logger.error(f"Thread not found: {data['thread_id']}")
             return {"error": "Thread not found"}
 
-        @weave.op()
+        # Generate title if thread is empty
+        if thread.messages.count() == 0:
+            logger.info("Generating title for new thread")
+            title = gen_thread_title(
+                api_endpoint=api_endpoint,
+                api_key=api_key,
+                api_model=api_model,
+                message=data["message"]
+            )
+            thread.thread_name = title
+            thread.save()
+            logger.debug(f"Set thread title: {title}")
+
+        # Create user message
+        user_message = Message.objects.create(
+            thread=thread,
+            sender=data["sender"],
+            type=data["type"],
+            message=data["message"],
+            metadata=data.get("metadata", {}),
+        )
+        logger.info(f"Created user message: {user_message.id}")
+
+        # Create assistant message placeholder
+        assistant_message = Message.objects.create(
+            thread=thread,
+            sender="Assistant",
+            type="assistant",
+            message="",
+            metadata={},
+        )
+        logger.info(f"Created assistant message placeholder: {assistant_message.id}")
+
+        # Get thread messages for context
+        thread_messages = [
+            {
+                "sender": msg.sender,
+                "message": msg.message,
+                "type": msg.type
+            }
+            for msg in thread.messages.all().order_by('created_on')
+        ]
+        logger.debug(f"Retrieved {len(thread_messages)} messages for context")
+
         def generate_response():
-            # Create user message
-            user_message = Message.objects.create(
-                thread=thread,
-                sender=data["sender"],
-                type=data["type"],
-                message=data["message"],
-                metadata=data.get("metadata", {}),
-            )
-
-            # Create assistant message placeholder
-            assistant_message = Message.objects.create(
-                thread=thread,
-                sender="Assistant",
-                type="assistant",
-                message="",
-                metadata={},
-            )
-
-            # Get thread messages for context
-            thread_messages = [
-                {
-                    "sender": msg.sender,
-                    "message": msg.message,
-                    "type": msg.type
-                }
-                for msg in thread.messages.all().order_by('created_on')
-            ]
-
             accumulated_message = ""
             try:
                 # Generate streaming response
-                for content in generate_streaming_response(
+                logger.info("Starting streaming response generation")
+                for content in gen_streaming_response(
                     api_endpoint=api_endpoint,
                     api_key=api_key,
                     api_model=api_model,
                     message=data["message"],
-                    thread_messages=thread_messages
+                    thread_messages=thread_messages,
+                    figma_token=figma_token,
+                    github_token=github_token
                 ):
                     accumulated_message += content
-                    yield content
+                    yield content.encode('utf-8')
 
+                logger.info(f"Finished streaming. Final message length: {len(accumulated_message)}")
                 # Update the assistant message with complete response
                 assistant_message.message = accumulated_message
                 assistant_message.save()
+                logger.info("Saved assistant message")
 
             except Exception as e:
+                error_message = f"\nError occurred: {str(e)}"
+                logger.error(f"Error in generate_response: {str(e)}")
                 # In case of error, update the message with error info
                 assistant_message.message = f"Error: {str(e)}"
                 assistant_message.metadata["error"] = str(e)
                 assistant_message.save()
-                yield f"\nError occurred: {str(e)}"
+                yield error_message.encode('utf-8')
 
+        logger.info("Returning streaming response")
         return StreamingHttpResponse(
             generate_response(),
-            content_type='text/plain'
+            content_type='text/event-stream'
         )
 
     except Exception as e:
+        logger.error(f"Failed to process message: {str(e)}")
         return {"error": f"Failed to process message: {str(e)}"}
 
 @app.api.put("/message/{message_id}")
