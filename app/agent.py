@@ -2,7 +2,8 @@ from openai import OpenAI
 import re
 import weave
 from datetime import datetime
-from agent_review_frame import review_figma_frame
+from agent_design_review import design_review
+from more_info_agent import get_more_info
 from logger import logger
 
 @weave.op()
@@ -60,15 +61,19 @@ Analyze the following conversation and respond using only the specified tags.
 Do not include any additional prose, explanations, or formatting beyond the tags listed. 
 
 ## Figma ({figma_status})
-### Design review, single frame
-- You have the ability to review a single frame from a Figma file.
-- Format: <review_design_frame>[FIGMA_FRAME_URL]</review_design_frame>
-- Example: <review_design_frame>https://www.figma.com/design/GlOG8RNAhlJwrCKHXy7NHp/Wireframe---Filter-Selectors?node-id=2133-51202&t=lcZiEKYhylq0sbkM-4</review_design_frame>
+### Extract images from Figma
+- You have the ability to extract images from Figma.
+- Images can be from a single frame or multiple frames.
+- Format: <extract_images_from_figma>[FIGMA_DESIGN_URL]</extract_images_from_figma>
+- Example: <extract_images_from_figma>https://www.figma.com/design/GlOG8RNAhlJwrCKHXy7NHp/Wireframe---Filter-Selectors?node-id=2133-51202&t=lcZiEKYhylq0sbkM-4</extract_images_from_figma>
 
-### Design review, page
-- You have the ability to review a full page from a Figma file.
-- Format: <review_designs_page>[FIGMA_PAGE_URL]</review_designs_page>
-- Example: <review_designs_page>https://www.figma.com/design/GlOG8RNAhlJwrCKHXy7NHp/Wireframe---Filter-Selectors?node-id=2101-19789</review_designs_page>
+### Design review from images
+- You have the ability to do design reviews on image links from Figma.
+- Figma image links will be in a Figma-based S3 bucket, but will not contain an extension.
+- You must have the images extracted first, if the user asks for a design review please run `extract_images_from_figma` first to gather the images for them.
+- You can have multiple images in your response.
+- Format: <review_design>[FIGMA_IMAGE_URL]</review_design> <review_design>[FIGMA_IMAGE_URL2]</review_design>
+- Example: <review_design>https://figma-alpha-api.s3.us-west-2.amazonaws.com/images/e66718fb-d99a-45ab-84dc-8b35babec01e</review_design>
 
 ## GitHub ({github_status})
 ### My active pull requests (PRs)
@@ -76,9 +81,9 @@ Do not include any additional prose, explanations, or formatting beyond the tags
 - Format: <my_active_prs/>
 
 ## Other
-### Follow up
+### More info needed
 - You have the ability to follow up with the user if you need more information to execute a task.
-- Format: <follow_up/>
+- Format: <more_info_needed/>
 
 ### Pass
 - You have the ability to continue talking without using any tools.
@@ -88,7 +93,7 @@ Do not include any additional prose, explanations, or formatting beyond the tags
 - Only use the tags provided.
 - Do not include any extra text, explanations, or formatting.
 - If no action applies, return <continue_conversation/>.
-- If a feature requires credentials that are disabled, return <follow_up/>.
+- If a feature requires credentials that are disabled, return <more_info/>.
         """.strip()
 
         messages = [
@@ -140,45 +145,44 @@ def gen_streaming_response(api_endpoint: str, api_key: str, api_model: str, mess
         routing_response = gen_router(client, api_model, thread_messages, figma_token, github_token)
         handled = False
         
-        # Handle Figma frame review
-        frame_pattern = r'<review_design_frame>(.*?)</review_design_frame>'
+        # Handle more info needed
+        if '<more_info_needed/>' in routing_response and not handled:
+            handled = True
+            logger.info("Processing more info needed request")
+            try:
+                for content in get_more_info(
+                    api_endpoint=api_endpoint,
+                    api_key=api_key,
+                    api_model=api_model,
+                    thread_messages=thread_messages
+                ):
+                    yield content + "\n"
+            except Exception as e:
+                logger.error(f"Error processing more info request: {str(e)}")
+                yield f"Error processing more info request: {str(e)}\n\n"
+
+        # Handle design review
+        frame_pattern = r'<review_design>(.*?)</review_design>'
         frame_urls = re.findall(frame_pattern, routing_response)
         if frame_urls and not handled:
             handled = True
-            if not figma_token:
-                logger.warning("Figma token not configured")
-                yield "Error: Figma API token not configured in settings\n\n"
-            else:
-                logger.info("Processing Figma frame review")
-                yield "> Reviewing Figma frame... \n\n"
-                url = frame_urls[0]
-                try:
-                    for content in review_figma_frame(
-                        figma_url=url,
-                        access_token=figma_token,
-                        api_endpoint=api_endpoint,
-                        api_key=api_key,
-                        api_model=api_model,
-                        thread_messages=thread_messages
-                    ):
-                        yield content + "\n"
-                except Exception as e:
-                    logger.error(f"Error processing Figma frame: {str(e)}")
-                    yield f"Error processing Figma frame: {str(e)}\n\n"
-
-        # Handle Figma page review
-        page_pattern = r'<review_designs_page>(.*?)</review_designs_page>'        
-        page_urls = re.findall(page_pattern, routing_response)
-        if page_urls and not handled:
-            handled = True
-            if not figma_token:
-                logger.warning("Figma token not configured")
-                yield "Error: Figma API token not configured in settings\n\n"
-            else:
-                logger.info("Processing Figma page review")
-                yield "> Reviewing Figma page for frames... \n\n"
-                url = page_urls[0]
-                yield f"Page review for URL: {url}\n\n"
+            logger.info("Processing design review")
+            yield "> Reviewing design...\n\n"
+            url = frame_urls[0]
+            try:
+                for content in design_review(
+                    image_url=url,
+                    api_endpoint=api_endpoint,
+                    api_key=api_key,
+                    api_model=api_model,
+                    thread_messages=thread_messages
+                ):
+                    # Only add a newline if the content doesn't already end with one
+                    if content:
+                        yield content if content.endswith('\n') else content + ' '
+            except Exception as e:
+                logger.error(f"Error processing design review: {str(e)}")
+                yield f"Error processing design review: {str(e)}\n\n"
 
         # Handle GitHub PRs
         pr_pattern = r'<my_active_prs/>'

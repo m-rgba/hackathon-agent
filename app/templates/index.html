@@ -320,7 +320,7 @@
                             // Update the rendered message in the DOM
                             const messageElement = document.querySelector(`[data-message-id="${assistantMessage.id}"]`);
                             if (messageElement) {
-                                messageElement.innerHTML = this.converter.makeHtml(assistantMessage.message);
+                                messageElement.innerHTML = this.renderMarkdown(assistantMessage.message);
                             }
                         }
                     }
@@ -374,7 +374,6 @@
                     console.error('Error editing message:', error);
                 }
             },
-            // Helper method to render markdown
             renderMarkdown(text) {
                 return this.converter.makeHtml(text);
             }
@@ -418,7 +417,7 @@
 
         <!-- Main content area -->
         <div class="flex flex-1 overflow-hidden">
-            <aside class="w-2/12 pl-2 mr-2 py-[13px] bg-white overflow-y-auto">
+            <aside class="w-2/12 pl-2 pr-4 py-[13px] bg-white overflow-y-auto">
                 <div class="space-y-1">
                     <div class="flex items-center gap-2">
                         <div class="relative w-full px-2">
@@ -537,11 +536,11 @@
                 </div>
 
                 <!-- Fixed input container -->
-                <div class="fixed -bottom-[4px] left-[17%] w-[calc((7/12*100%-4px))] bg-white">
+                <div class="fixed -bottom-[6px] -ml-4 left-2/12 w-7/12 bg-white">
                     <div class="relative">
                         <textarea x-model="messageInput"
                             @keydown.enter.prevent="if (!$event.shiftKey) { sendMessage(); }"
-                            class="w-full p-4 pr-[72px] border-t border-stone-200 bg-white outline-0 shadow-xs text-lg min-h-[120px] max-h-[50vh] hover:border-stone-300 focus:bg-stone-50 focus:outline-none focus:ring-0 active:ring-0 resize-none overflow-y-auto"
+                            class="w-full p-4 pr-[72px] border-t border-l-0 border-stone-200 bg-white outline-0 shadow-xs text-lg min-h-[120px] max-h-[50vh] hover:border-stone-300 focus:border-stone-300 focus:bg-stone-50 focus:outline-none focus:ring-0 active:ring-0 resize-none overflow-y-auto"
                             placeholder="What would you like some help with..." rows="1"
                             x-data="{ resize() { this.$el.style.height = '0px'; this.$el.style.height = this.$el.scrollHeight + 'px' } }"
                             x-init="resize()" @input="resize()"></textarea>
