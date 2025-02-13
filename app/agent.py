@@ -3,6 +3,8 @@ import re
 import weave
 from datetime import datetime
 from agent_design_review import design_review
+from agent_figma_extract import extract_figma_images
+from agent_tone_review import tone_text_copy_review
 from more_info_agent import get_more_info
 from logger import logger
 
@@ -75,6 +77,14 @@ Do not include any additional prose, explanations, or formatting beyond the tags
 - Format: <review_design>[FIGMA_IMAGE_URL]</review_design> <review_design>[FIGMA_IMAGE_URL2]</review_design>
 - Example: <review_design>https://figma-alpha-api.s3.us-west-2.amazonaws.com/images/e66718fb-d99a-45ab-84dc-8b35babec01e</review_design>
 
+### Tone of voice, text copy review from images
+- You have the ability to do tone of voice reviews on text copy from image links from Figma.
+- Figma image links will be in a Figma-based S3 bucket, but will not contain an extension.
+- You must have the images extracted first, if the user asks for a tone review please run `extract_images_from_figma` first to gather the images for them.
+- You can have multiple images in your response.
+- Format: <tone_text_copy_review>[FIGMA_IMAGE_URL]</tone_text_copy_review> <tone_text_copy_review>[FIGMA_IMAGE_URL2]</tone_text_copy_review>
+- Example: <tone_text_copy_review>https://figma-alpha-api.s3.us-west-2.amazonaws.com/images/e66718fb-d99a-45ab-84dc-8b35babec01e</tone_text_copy_review>
+
 ## GitHub ({github_status})
 ### My active pull requests (PRs)
 - You have the ability to view your active pull requests (PRs), a description of the PR, the status of the PR, and the size.
@@ -144,6 +154,23 @@ def gen_streaming_response(api_endpoint: str, api_key: str, api_model: str, mess
         logger.info("Getting routing response")
         routing_response = gen_router(client, api_model, thread_messages, figma_token, github_token)
         handled = False
+
+        # Handle Figma image extraction
+        figma_pattern = r'<extract_images_from_figma>(.*?)</extract_images_from_figma>'
+        figma_urls = re.findall(figma_pattern, routing_response)
+        if figma_urls and not handled:
+            handled = True
+            logger.info("Processing Figma image extraction")
+            if not figma_token:
+                logger.warning("Figma token not configured")
+                yield "Error: Figma token not configured in settings\n\n"
+            else:
+                try:
+                    for content in extract_figma_images(figma_token, figma_urls[0]):
+                        yield content
+                except Exception as e:
+                    logger.error(f"Error extracting Figma images: {str(e)}")
+                    yield f"Error extracting Figma images: {str(e)}\n\n"
         
         # Handle more info needed
         if '<more_info_needed/>' in routing_response and not handled:
@@ -167,22 +194,53 @@ def gen_streaming_response(api_endpoint: str, api_key: str, api_model: str, mess
         if frame_urls and not handled:
             handled = True
             logger.info("Processing design review")
-            yield "> Reviewing design...\n\n"
-            url = frame_urls[0]
-            try:
-                for content in design_review(
-                    image_url=url,
-                    api_endpoint=api_endpoint,
-                    api_key=api_key,
-                    api_model=api_model,
-                    thread_messages=thread_messages
-                ):
-                    # Only add a newline if the content doesn't already end with one
-                    if content:
-                        yield content if content.endswith('\n') else content + ' '
-            except Exception as e:
-                logger.error(f"Error processing design review: {str(e)}")
-                yield f"Error processing design review: {str(e)}\n\n"
+            total_designs = len(frame_urls)
+            for idx, url in enumerate(frame_urls):
+                if idx == 0:
+                    yield f"> Reviewing {url} (1 of {total_designs})...\n\n"
+                else:
+                    yield f"\n\n> Reviewing {url} ({idx + 1} of {total_designs})...\n\n"
+                try:
+                    for content in design_review(
+                        image_url=url,
+                        api_endpoint=api_endpoint,
+                        api_key=api_key,
+                        api_model=api_model,
+                        thread_messages=thread_messages
+                    ):
+                        # Only add a newline if the content doesn't already end with one
+                        if content:
+                            yield content if content.endswith('\n') else content + ' '
+                except Exception as e:
+                    logger.error(f"Error processing design review for URL {idx + 1}: {str(e)}")
+                    yield f"Error processing design review for URL {idx + 1}: {str(e)}\n\n"
+
+        # Handle tone and text copy review
+        tone_pattern = r'<tone_text_copy_review>(.*?)</tone_text_copy_review>'
+        tone_urls = re.findall(tone_pattern, routing_response)
+        if tone_urls and not handled:
+            handled = True
+            logger.info("Processing tone and text copy review")
+            total_designs = len(tone_urls)
+            for idx, url in enumerate(tone_urls):
+                if idx == 0:
+                    yield f"> Analyzing text copy in {url} (1 of {total_designs})...\n\n"
+                else:
+                    yield f"\n\n> Analyzing text copy in {url} ({idx + 1} of {total_designs})...\n\n"
+                try:
+                    for content in tone_text_copy_review(
+                        image_url=url,
+                        api_endpoint=api_endpoint,
+                        api_key=api_key,
+                        api_model=api_model,
+                        thread_messages=thread_messages
+                    ):
+                        # Only add a newline if the content doesn't already end with one
+                        if content:
+                            yield content if content.endswith('\n') else content + ' '
+                except Exception as e:
+                    logger.error(f"Error processing tone review for URL {idx + 1}: {str(e)}")
+                    yield f"Error processing tone review for URL {idx + 1}: {str(e)}\n\n"
 
         # Handle GitHub PRs
         pr_pattern = r'<my_active_prs/>'
@@ -207,9 +265,34 @@ def gen_streaming_response(api_endpoint: str, api_key: str, api_model: str, mess
                     messages=messages,
                     stream=True
                 )
+                
+                buffer = ""
                 for chunk in stream:
                     if chunk.choices[0].delta.content is not None:
-                        yield chunk.choices[0].delta.content
+                        content = chunk.choices[0].delta.content
+                        # Add to buffer
+                        buffer += content
+                        
+                        # If we have a newline or sufficient content, process and yield
+                        if '\n' in buffer or len(buffer) > 80:
+                            # Split by newlines to preserve them
+                            parts = buffer.split('\n')
+                            
+                            # Process all parts except the last one
+                            for part in parts[:-1]:
+                                # Normalize spaces while preserving intentional newlines
+                                normalized = ' '.join(part.split())
+                                if normalized:
+                                    yield normalized + '\n'
+                            
+                            # Keep the last part in buffer
+                            buffer = parts[-1]
+                
+                # Process any remaining content in buffer
+                if buffer:
+                    normalized = ' '.join(buffer.split())
+                    if normalized:
+                        yield normalized
             else:
                 logger.info("Yielding routing response as fallback")
                 yield routing_response

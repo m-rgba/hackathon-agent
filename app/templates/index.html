@@ -34,6 +34,9 @@
             font-style: normal !important;
             quotes: none !important;
         }
+        .prose :where(a):not(:where([class~="not-prose"],[class~="not-prose"] *)){
+            font-weight: 400 !important;
+        }
         blockquote > p {
             margin-top: 0.4em !important;
             margin-bottom: 0.44em !important;
@@ -47,8 +50,23 @@
 
 <script>
     document.addEventListener('alpine:init', () => {
+        // Add custom extension for external links
+        showdown.extension('targetBlank', () => {
+            return [{
+                type: 'output',
+                regex: /<a\s+(?:[^>]*?)href="([^"]*)"([^>]*)>/g,
+                replace: '<a href="$1" target="_blank" rel="noopener noreferrer"$2>'
+            }];
+        });
+
         Alpine.data('pageLogic', () => ({
-            converter: new showdown.Converter(),
+            converter: new showdown.Converter({
+                tables: true,
+                strikethrough: true,
+                tasklists: true,
+                simplifiedAutoLink: true,
+                extensions: ['targetBlank']
+            }),
             showTitle: false,
             showSettings: false,
             showEditMessage: false,
@@ -486,7 +504,7 @@
                             </div>
                             <div class="w-full">
                                 <div class="text-stone-400 font-medium" x-text="message.sender"></div>
-                                <div class="text-lg prose prose-p:font-normal prose-em:font-normal prose-em:not-italic prose-strong:font-normal mb-2" :data-message-id="message.id"
+                                <div class="text-lg prose prose-p:font-normal prose-strong:font-normal mb-2" :data-message-id="message.id"
                                     x-html="renderMarkdown(message.message || message.content)"></div>
                                 <div
                                     class="flex items-center opacity-0 transition-opacity duration-200 group-hover:opacity-100">

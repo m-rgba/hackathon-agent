@@ -69,9 +69,33 @@ Remember to maintain context from previous messages and only ask for information
             stream=True
         )
 
+        buffer = ""
         for chunk in stream:
             if chunk.choices[0].delta.content is not None:
-                yield chunk.choices[0].delta.content
+                content = chunk.choices[0].delta.content
+                # Add to buffer
+                buffer += content
+                
+                # If we have a newline or sufficient content, process and yield
+                if '\n' in buffer or len(buffer) > 80:
+                    # Split by newlines to preserve them
+                    parts = buffer.split('\n')
+                    
+                    # Process all parts except the last one
+                    for part in parts[:-1]:
+                        # Normalize spaces while preserving intentional newlines
+                        normalized = ' '.join(part.split())
+                        if normalized:
+                            yield normalized + '\n'
+                    
+                    # Keep the last part in buffer
+                    buffer = parts[-1]
+        
+        # Process any remaining content in buffer
+        if buffer:
+            normalized = ' '.join(buffer.split())
+            if normalized:
+                yield normalized
 
     except Exception as e:
         error_msg = f"Error in more_info agent: {str(e)}"
