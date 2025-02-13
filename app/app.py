@@ -10,6 +10,8 @@ from typing import AsyncGenerator
 from django.http import StreamingHttpResponse
 import time
 import os
+from django.core.serializers.json import DjangoJSONEncoder
+from agent import OpenAIAgent
 
 app = Django(
     # ALLOWED_HOSTS=["localhost", "127.0.0.1"],
@@ -315,7 +317,7 @@ def create_message(request):
         return {"error": f"Failed to create message: {str(e)}"}
 
 @app.api.post("/message/send")
-async def send_message(request) -> StreamingHttpResponse:
+def send_message(request):
     try:
         data = json.loads(request.body)
 
@@ -334,40 +336,27 @@ async def send_message(request) -> StreamingHttpResponse:
 
         # Get thread
         try:
-            thread = await sync_to_async(Thread.objects.get)(id=data["thread_id"])
+            thread = Thread.objects.get(id=data["thread_id"])
         except Thread.DoesNotExist:
             return {"error": "Thread not found"}
 
-        # Create user message
-        message = await sync_to_async(Message.objects.create)(
-            thread=thread,
-            sender=data["sender"],
-            type=data["type"],
-            message=data["message"],
-            metadata=data.get("metadata", {}),
-        )
+        def generate_response():
+            # Create user message
+            user_message = Message.objects.create(
+                thread=thread,
+                sender=data["sender"],
+                type=data["type"],
+                message=data["message"],
+                metadata=data.get("metadata", {}),
+            )
 
-        async def stream_response() -> AsyncGenerator[str, None]:
-            # Send initial message creation confirmation
-            yield json.dumps({
-                "type": "message_created",
-                "message_data": {
-                    "id": message.id,
-                    "sender": message.sender,
-                    "type": message.type,
-                    "message": message.message,
-                    "created_on": message.created_on,
-                    "metadata": message.metadata,
-                }
-            }) + "\n"
-
-            # Initialize OpenAI client
-            client = OpenAI(base_url=api_endpoint, api_key=api_key)
+            # Initialize OpenAI agent
+            agent = OpenAIAgent(api_endpoint, api_key, api_model)
 
             # Create assistant message placeholder
-            assistant_message = await sync_to_async(Message.objects.create)(
+            assistant_message = Message.objects.create(
                 thread=thread,
-                sender="assistant",
+                sender="Assistant",
                 type="assistant",
                 message="",
                 metadata={},
@@ -375,46 +364,25 @@ async def send_message(request) -> StreamingHttpResponse:
 
             accumulated_message = ""
             try:
-                # Create streaming completion
-                stream = client.chat.completions.create(
-                    model=api_model,
-                    messages=[{"role": "user", "content": data["message"]}],
-                    stream=True,
-                )
-
-                # Stream the response
-                async for chunk in stream:
-                    if chunk.choices[0].delta.content is not None:
-                        content = chunk.choices[0].delta.content
-                        accumulated_message += content
-                        
-                        yield json.dumps({
-                            "type": "assistant_message",
-                            "message_id": str(assistant_message.id),
-                            "content": content
-                        }) + "\n"
+                # Generate streaming response
+                for content in agent.generate_streaming_response(data["message"]):
+                    accumulated_message += content
+                    yield content
 
                 # Update the assistant message with complete response
                 assistant_message.message = accumulated_message
-                await sync_to_async(assistant_message.save)()
-
-                # Send completion message
-                yield json.dumps({
-                    "type": "complete",
-                    "message_id": str(assistant_message.id),
-                    "final_message": accumulated_message
-                }) + "\n"
+                assistant_message.save()
 
             except Exception as e:
-                # Handle any errors during streaming
-                yield json.dumps({
-                    "type": "error",
-                    "error": str(e)
-                }) + "\n"
+                # In case of error, update the message with error info
+                assistant_message.message = f"Error: {str(e)}"
+                assistant_message.metadata["error"] = str(e)
+                assistant_message.save()
+                yield f"\nError occurred: {str(e)}"
 
         return StreamingHttpResponse(
-            stream_response(),
-            content_type='application/x-ndjson'
+            generate_response(),
+            content_type='text/plain'
         )
 
     except Exception as e:
