@@ -5,6 +5,7 @@ from datetime import datetime
 from agent_design_review import design_review
 from agent_figma_extract import extract_figma_images
 from agent_tone_review import tone_text_copy_review
+from agent_pr_lookup import lookup_prs
 from more_info_agent import get_more_info
 from logger import logger
 
@@ -58,6 +59,7 @@ def gen_router(client, api_model: str, thread_messages: list = None, figma_token
         
         system_prompt = f"""
 Current time: {current_time}
+My Github username is m-rbga
 
 Analyze the following conversation and respond using only the specified tags. 
 Do not include any additional prose, explanations, or formatting beyond the tags listed. 
@@ -257,17 +259,46 @@ def gen_streaming_response(api_endpoint: str, api_key: str, api_model: str, mess
                     yield f"Error processing tone review for URL {idx + 1}: {str(e)}\n\n"
 
         # Handle GitHub PRs
-        pr_pattern = r'<my_active_prs/>'
-        if re.search(pr_pattern, routing_response) and not handled:
+        pr_pattern = r'<pr_lookup>(.*?)</pr_lookup>'
+        pr_matches = re.findall(pr_pattern, routing_response, re.DOTALL)
+        if pr_matches and not handled:
             handled = True
             if not github_token:
                 logger.warning("GitHub token not configured")
                 yield "Error: GitHub token not configured in settings\n\n"
             else:
-                logger.info("Processing GitHub PRs request")
-                yield "> Fetching active PRs... \n\n"
-                # TODO: Implement GitHub PR fetching logic
-                yield "GitHub PR fetching not yet implemented\n\n"
+                logger.info("Processing GitHub PR lookup request")
+                try:
+                    # Parse the PR lookup parameters
+                    pr_data = {}
+                    
+                    # Extract optional parameters if they exist
+                    if pr_matches[0].strip():  # Only try to extract if there's content inside the tag
+                        # Extract start date
+                        start_date_match = re.search(r'<start_date>(.*?)</start_date>', pr_matches[0])
+                        if start_date_match:
+                            pr_data['start_date'] = start_date_match.group(1)
+                        
+                        # Extract end date
+                        end_date_match = re.search(r'<end_date>(.*?)</end_date>', pr_matches[0])
+                        if end_date_match:
+                            pr_data['end_date'] = end_date_match.group(1)
+                        
+                        # Extract author
+                        author_match = re.search(r'<author>(.*?)</author>', pr_matches[0])
+                        if author_match:
+                            pr_data['author'] = author_match.group(1)
+                        
+                        # Extract search term
+                        search_term_match = re.search(r'<search_term>(.*?)</search_term>', pr_matches[0])
+                        if search_term_match:
+                            pr_data['search_term'] = search_term_match.group(1)
+                    
+                    for content in lookup_prs(github_token, pr_data):
+                        yield content
+                except Exception as e:
+                    logger.error(f"Error processing PR lookup: {str(e)}")
+                    yield f"Error processing PR lookup: {str(e)}\n\n"
 
         # Handle conversation or fallback
         if not handled:

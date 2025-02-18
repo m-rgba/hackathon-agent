@@ -1,11 +1,13 @@
 import logging
 from openai import OpenAI
 from typing import Generator
+import weave
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@weave.op()
 def tone_text_copy_review(
     image_url: str,
     api_endpoint: str,

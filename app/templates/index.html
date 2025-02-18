@@ -412,7 +412,7 @@
             </div>
             <div class="ml-[calc(16.666%-30px)] max-w-full ellipses flex-1">
                 <p @click="showTitle = true; $nextTick(() => $refs.titleInput.focus())"
-                    class="font-semibold px-4 py-1 rounded-md border-0 outline-0 w-max cursor-default hover:bg-stone-100"
+                    class="text-lg font-semibold px-4 py-1 rounded-md border-0 outline-0 w-max cursor-default hover:bg-stone-100"
                     x-text="activeThreadId ? (threads.find(t => t.id === activeThreadId)?.thread_name || 'Untitled task') : 'Untitled task'">
                 </p>
             </div>
@@ -445,7 +445,7 @@
                                     d="M456.69 421.39 362.6 327.3a173.81 173.81 0 0 0 34.84-104.58C397.44 126.38 319.06 48 222.72 48S48 126.38 48 222.72s78.38 174.72 174.72 174.72A173.81 173.81 0 0 0 327.3 362.6l94.09 94.09a25 25 0 0 0 35.3-35.3zM97.92 222.72a124.8 124.8 0 1 1 124.8 124.8 124.95 124.95 0 0 1-124.8-124.8z">
                                 </path>
                             </svg>
-                            <input type="text" class="w-full px-3 pl-6 py-1 bg-white border-0 outline-0"
+                            <input type="text" class="w-full px-3 pl-6 py-1 bg-white border-0 outline-0 focus:border-white"
                                 placeholder="Search..." x-model="searchQuery" />
                         </div>
                         <button @click="createThread()"
@@ -501,8 +501,8 @@
                                 </template>
                             </div>
                             <div class="w-full">
-                                <div class="text-stone-400 font-medium" x-text="message.sender"></div>
-                                <div class="text-lg prose prose-p:font-normal prose-strong:font-normal mb-2" :data-message-id="message.id"
+                                <div class="text-stone-400 font-medium" x-text="message.sender === 'User' ? 'User' : 'Assistant'"></div>
+                                <div class="prose prose-p:font-normal prose-strong:font-normal mb-2" :data-message-id="message.id"
                                     x-html="renderMarkdown(message.message || message.content)"></div>
                                 <div
                                     class="flex items-center opacity-0 transition-opacity duration-200 group-hover:opacity-100">
